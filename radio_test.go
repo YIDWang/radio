@@ -1,33 +1,44 @@
-package pubsub
+package radio
 
 import (
-	"bytes"
 	"fmt"
-	"strconv"
+	"log"
+	"net/http"
+	_ "net/http/pprof"
 	"sync"
 	"testing"
 	"time"
 )
 
 var gwg sync.WaitGroup
-var gcount = 100
-var ncount = 10000
-var stop = []byte(strconv.Itoa(ncount - 1))
+var gcount = 500
+var ncount int = 1000
+
+func init() {
+	go func() {
+		log.Println(http.ListenAndServe("localhost:6060", nil))
+	}()
+}
 
 func waiter(r *Radio) {
-	wg := r.Horn()
+	wg := r.Listener()
 	for {
-		if bytes.Equal(r.Event(), stop) {
-			gwg.Done()
-			return
+		ev := r.Event()
+		switch ev.(type) {
+		case nil:
+		case int:
+			if ev.(int) == (ncount - 1) {
+				gwg.Done()
+				return
+			}
 		}
 		wg.Wait()
-		wg = r.Horn()
+		wg = r.Listener()
 	}
 }
 
-func TestRadio_WaitSync(t *testing.T) {
-	r := NewRadio(true)
+func TestRadio_WaitDiscard(t *testing.T) {
+	r := NewRadio(false)
 	gwg.Add(gcount)
 	for i := 0; i < gcount; i++ {
 		go waiter(r)
@@ -35,11 +46,11 @@ func TestRadio_WaitSync(t *testing.T) {
 
 	t1 := time.Now()
 	for i := 0; i < ncount; i++ {
-		r.Broadcast([]byte(strconv.Itoa(i)))
+		r.Broadcast(i)
 	}
-	fmt.Println("broadcast cost time :", time.Now().Sub(t1))
 	gwg.Wait()
 	r.Close()
+	fmt.Println("broadcast cost time :", time.Now().Sub(t1))
 }
 
 func TestScan(t *testing.T) {
@@ -55,7 +66,7 @@ func TestScan(t *testing.T) {
 }
 
 func TestRadio_Wait(t *testing.T) {
-	r := NewRadio(false)
+	r := NewRadio(true)
 	gwg.Add(gcount)
 	for i := 0; i < gcount; i++ {
 		go waiter(r)
@@ -63,9 +74,30 @@ func TestRadio_Wait(t *testing.T) {
 
 	t1 := time.Now()
 	for i := 0; i < ncount; i++ {
-		r.Broadcast([]byte(strconv.Itoa(i)))
+		r.Broadcast(i)
 	}
-	fmt.Println("broadcast cost time :", time.Now().Sub(t1))
 	gwg.Wait()
 	r.Close()
+	fmt.Println("broadcast cost time :", time.Now().Sub(t1))
+}
+
+func TestRadioTransform(t *testing.T) {
+	r := NewRadio(false)
+	gwg.Add(gcount)
+	for i := 0; i < gcount; i++ {
+		go waiter(r)
+	}
+	go func() {
+		for i := 0; i < 1000; i++ {
+			r.Transform()
+		}
+	}()
+
+	t1 := time.Now()
+	for i := 0; i < ncount; i++ {
+		r.Broadcast(i)
+	}
+	gwg.Wait()
+	r.Close()
+	fmt.Println("broadcast cost time :", time.Now().Sub(t1))
 }
