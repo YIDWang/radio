@@ -1,4 +1,4 @@
-package radio
+package pubsub
 
 import (
 	"fmt"
@@ -12,7 +12,7 @@ import (
 
 var gwg sync.WaitGroup
 var gcount = 500
-var ncount int = 1000
+var ncount int = 100
 
 func init() {
 	go func() {
@@ -20,20 +20,22 @@ func init() {
 	}()
 }
 
-func waiter(r *Radio) {
+func Println(r *Radio) {
+	time.Sleep(time.Minute)
+	fmt.Println(r.Event().Content().(int))
+}
+
+func waiter(r *Radio, index int) {
 	wg := r.Listener()
+	var ev *Event
 	for {
-		ev := r.Event()
-		switch ev.(type) {
-		case nil:
-		case int:
-			if ev.(int) == (ncount - 1) {
-				gwg.Done()
-				return
-			}
-		}
 		wg.Wait()
 		wg = r.Listener()
+		ev = r.Event()
+		if ev.Content().(int) == (ncount - 1) {
+			gwg.Done()
+			return
+		}
 	}
 }
 
@@ -41,12 +43,13 @@ func TestRadio_WaitDiscard(t *testing.T) {
 	r := NewRadio(false)
 	gwg.Add(gcount)
 	for i := 0; i < gcount; i++ {
-		go waiter(r)
+		go waiter(r, i)
 	}
+	time.Sleep(time.Second)
 
 	t1 := time.Now()
 	for i := 0; i < ncount; i++ {
-		r.Broadcast(i)
+		r.Broadcast(NewEvent(i))
 	}
 	gwg.Wait()
 	r.Close()
@@ -67,14 +70,16 @@ func TestScan(t *testing.T) {
 
 func TestRadio_Wait(t *testing.T) {
 	r := NewRadio(true)
+	go Println(r)
 	gwg.Add(gcount)
 	for i := 0; i < gcount; i++ {
-		go waiter(r)
+		go waiter(r, i)
 	}
+	time.Sleep(time.Second)
 
 	t1 := time.Now()
 	for i := 0; i < ncount; i++ {
-		r.Broadcast(i)
+		r.Broadcast(NewEvent(i))
 	}
 	gwg.Wait()
 	r.Close()
@@ -85,17 +90,18 @@ func TestRadioTransform(t *testing.T) {
 	r := NewRadio(false)
 	gwg.Add(gcount)
 	for i := 0; i < gcount; i++ {
-		go waiter(r)
+		go waiter(r, i)
 	}
 	go func() {
 		for i := 0; i < 1000; i++ {
 			r.Transform()
 		}
 	}()
+	time.Sleep(time.Second)
 
 	t1 := time.Now()
 	for i := 0; i < ncount; i++ {
-		r.Broadcast(i)
+		r.Broadcast(NewEvent(i))
 	}
 	gwg.Wait()
 	r.Close()

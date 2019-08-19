@@ -1,4 +1,4 @@
-package radio
+package pubsub
 
 import (
 	"sync"
@@ -6,7 +6,34 @@ import (
 	"unsafe"
 )
 
-var InvalidEvent = unsafe.Pointer(new(interface{}))
+var (
+	invalidEvent = unsafe.Pointer(new(interface{}))
+	initialID    int64
+)
+
+func idGenerator() int64 {
+	return atomic.AddInt64(&initialID, 1)
+}
+
+// Event broadcast on the radio
+// Id guarantees the order of events
+type Event struct {
+	content interface{}
+	id      int64
+}
+
+// NewEvent return ordered event
+func NewEvent(content interface{}) *Event {
+	return &Event{
+		content: content,
+		id:      idGenerator(),
+	}
+}
+
+// Content event content
+func (ev *Event) Content() interface{} {
+	return ev.content
+}
 
 // Radio publishes the latest event
 // Every listener will be notified,it can get the latest event through the Event
@@ -17,6 +44,7 @@ type Radio struct {
 
 	echan   chan unsafe.Pointer
 	discard bool
+	wg      sync.WaitGroup
 }
 
 // NewRadio create a radio
@@ -24,10 +52,11 @@ func NewRadio(discard bool) *Radio {
 	r := &Radio{
 		horn:        horn(),
 		discard:     discard,
-		latestEvent: InvalidEvent,
+		latestEvent: invalidEvent,
 	}
 	if discard {
 		r.echan = make(chan unsafe.Pointer, 1)
+		r.wg.Add(1)
 		go r.broadcast()
 	}
 	return r
@@ -42,6 +71,7 @@ func CloneRadio(r *Radio, discard bool) *Radio {
 	}
 	if discard {
 		nr.echan = make(chan unsafe.Pointer, 1)
+		nr.wg.Add(1)
 		go nr.broadcast()
 	}
 	return nr
@@ -58,14 +88,11 @@ func (r *Radio) Discard() bool {
 func (r *Radio) Transform() {
 	r.lock.Lock()
 	if r.discard {
-		select {
-		case ev := <-r.echan:
-			r.publish(ev)
-		default:
-		}
 		close(r.echan)
+		r.wg.Wait()
 	} else {
 		r.echan = make(chan unsafe.Pointer, 1)
+		r.wg.Add(1)
 		go r.broadcast()
 	}
 	r.discard = !r.discard
@@ -78,29 +105,38 @@ func (r *Radio) Listener() *sync.WaitGroup {
 }
 
 // Event return the latest event
-func (r *Radio) Event() interface{} {
+func (r *Radio) Event() *Event {
 	ev := atomic.LoadPointer(&r.latestEvent)
-	if ev == InvalidEvent {
+	if ev == invalidEvent {
 		return nil
 	}
-	return *(*interface{})(ev)
+	return (*Event)(ev)
 }
 
 // Broadcast update local events and publish notifications
-func (r *Radio) Broadcast(event interface{}) {
-	r.lock.RLock()
-	defer r.lock.RUnlock()
+func (r *Radio) Broadcast(event *Event) {
+	if event == nil {
+		return
+	}
+	r.lock.Lock()
+	defer r.lock.Unlock()
 	if !r.discard {
-		r.publish(unsafe.Pointer(&event))
+		if event.id < r.Event().id {
+			return
+		}
+		r.publish(unsafe.Pointer(event))
 		return
 	}
 	for {
 		select {
-		case r.echan <- unsafe.Pointer(&event):
+		case r.echan <- unsafe.Pointer(event):
 			return
 		case ev := <-r.echan:
 			if ev == nil {
 				return
+			}
+			if event.id < (*Event)(ev).id {
+				event = (*Event)(ev)
 			}
 		}
 	}
@@ -117,6 +153,7 @@ func (r *Radio) Close() {
 }
 
 func (r *Radio) broadcast() {
+	defer r.wg.Done()
 	for {
 		select {
 		case event := <-r.echan:
